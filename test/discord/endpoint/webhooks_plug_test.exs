@@ -7,6 +7,11 @@ defmodule Discord.Endpoint.WebhooksPlugTest do
   alias Discord.Endpoint.WebhooksPlug
   alias Discord.Webhooks.EventBuffer
 
+  setup_all do
+    start_supervised!({Discord.Webhooks, []})
+    :ok
+  end
+
   setup do
     EventBuffer.clear()
 

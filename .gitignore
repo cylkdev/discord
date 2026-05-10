@@ -32,3 +32,6 @@ dialyzer/
 *.plt.*
 *.secret.exs
 *.secrets.exs
+CLAUDE.md
+RULES.md
+.claude/

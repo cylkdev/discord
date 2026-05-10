@@ -5,8 +5,11 @@ defmodule Discord.Gateways.WebSocketRegistry do
 
   @name Discord.Gateways.WebSocketRegistry
   @unique :unique
+  @logger_prefix "Discord.Gateways.WebSocketRegistry"
 
   def start_link(opts) do
+    Discord.Log.info(@logger_prefix, "registry starting")
+
     opts
     |> Keyword.put(:keys, @unique)
     |> Keyword.put(:name, @name)
@@ -23,8 +26,13 @@ defmodule Discord.Gateways.WebSocketRegistry do
 
   def lookup(name) do
     case Registry.lookup(@name, name) do
-      [] -> nil
-      [{pid, _}] -> pid
+      [] ->
+        Discord.Log.debug(@logger_prefix, "lookup miss name=#{inspect(name)}")
+        nil
+
+      [{pid, _}] ->
+        Discord.Log.debug(@logger_prefix, "lookup hit name=#{inspect(name)} pid=#{inspect(pid)}")
+        pid
     end
   end
 

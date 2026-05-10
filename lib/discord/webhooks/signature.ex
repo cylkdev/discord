@@ -10,6 +10,8 @@ defmodule Discord.Webhooks.Signature do
   Backed by Erlang/OTP's native `:crypto.verify/5` — no extra dependency.
   """
 
+  @logger_prefix "Discord.Webhooks.Signature"
+
   @signature_bytes 64
   @public_key_bytes 32
 
@@ -37,8 +39,14 @@ defmodule Discord.Webhooks.Signature do
     with {:ok, sig} <- decode_signature(signature_hex),
          {:ok, pub} <- decode_public_key(public_key_hex) do
       if :crypto.verify(:eddsa, :none, timestamp <> body, sig, [pub, :ed25519]) do
+        Discord.Log.debug(@logger_prefix, "signature verified", body_size: byte_size(body))
         :ok
       else
+        Discord.Log.warning(@logger_prefix, "signature verification failed",
+          timestamp: timestamp,
+          body_size: byte_size(body)
+        )
+
         {:error, :invalid_signature}
       end
     end
@@ -46,15 +54,27 @@ defmodule Discord.Webhooks.Signature do
 
   defp decode_signature(hex) do
     case Base.decode16(hex, case: :mixed) do
-      {:ok, bin} when byte_size(bin) == @signature_bytes -> {:ok, bin}
-      _ -> {:error, :malformed_signature}
+      {:ok, bin} when byte_size(bin) == @signature_bytes ->
+        {:ok, bin}
+
+      _ ->
+        Discord.Log.warning(@logger_prefix, "malformed signature header", length: byte_size(hex))
+
+        {:error, :malformed_signature}
     end
   end
 
   defp decode_public_key(hex) do
     case Base.decode16(hex, case: :mixed) do
-      {:ok, bin} when byte_size(bin) == @public_key_bytes -> {:ok, bin}
-      _ -> {:error, :malformed_public_key}
+      {:ok, bin} when byte_size(bin) == @public_key_bytes ->
+        {:ok, bin}
+
+      _ ->
+        Discord.Log.error(@logger_prefix, "malformed public key — webhooks misconfigured",
+          length: byte_size(hex)
+        )
+
+        {:error, :malformed_public_key}
     end
   end
 end

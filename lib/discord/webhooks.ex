@@ -17,15 +17,18 @@ defmodule Discord.Webhooks do
   option to `Discord.Endpoint.start_link/1` (`:public_key`); it is not held
   by this supervisor.
 
-      iex> Discord.Webhooks.events()
-      [%{type: "APPLICATION_AUTHORIZED", received_at: "...", payload: %{...}}, ...]
+  iex> Discord.Webhooks.events()
+  [%{type: "APPLICATION_AUTHORIZED", received_at: "...", payload: %{...}}, ...]
   """
 
   use Supervisor
 
   alias Discord.Webhooks.EventBuffer
 
+  @logger_prefix "Discord.Webhooks"
+
   def start_link(opts \\ []) do
+    Discord.Log.info(@logger_prefix, "starting")
     Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end
 

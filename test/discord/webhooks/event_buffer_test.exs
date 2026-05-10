@@ -3,6 +3,11 @@ defmodule Discord.Webhooks.EventBufferTest do
 
   alias Discord.Webhooks.EventBuffer
 
+  setup_all do
+    start_supervised!({EventBuffer, []})
+    :ok
+  end
+
   setup do
     EventBuffer.clear()
     :ok

@@ -13,10 +13,13 @@ defmodule Discord.Endpoint.RequestPlug do
 
   @behaviour Plug
 
-  alias Discord.Endpoint.{GatewayPlug, Response, WebhooksPlug}
+  alias Discord.Endpoint.{GatewayPlug, HealthPlug, Response, WebhooksPlug}
   alias Plug.Conn
 
+  @logger_prefix "Discord.Endpoint.RequestPlug"
+
   @routes %{
+    "health" => HealthPlug,
     "gateways" => GatewayPlug,
     "webhooks" => WebhooksPlug
   }
@@ -29,12 +32,24 @@ defmodule Discord.Endpoint.RequestPlug do
   end
 
   @impl true
-  def call(%Conn{path_info: [prefix | _]} = conn, state) do
+  def call(%Conn{path_info: [prefix | _] = path_info, method: method} = conn, state) do
+    Discord.Log.debug(@logger_prefix, "request received",
+      method: method,
+      path: "/" <> Enum.join(path_info, "/")
+    )
+
     case Map.fetch(state, prefix) do
-      {:ok, {plug, plug_state}} -> plug.call(conn, plug_state)
-      :error -> Response.send_json(conn, 404, %{error: "not_found"})
+      {:ok, {plug, plug_state}} ->
+        plug.call(conn, plug_state)
+
+      :error ->
+        Discord.Log.debug(@logger_prefix, "no route matched", prefix: prefix)
+        Response.send_json(conn, 404, %{error: "not_found"})
     end
   end
 
-  def call(conn, _state), do: Response.send_json(conn, 404, %{error: "not_found"})
+  def call(conn, _state) do
+    Discord.Log.debug(@logger_prefix, "no route matched (empty path)", method: conn.method)
+    Response.send_json(conn, 404, %{error: "not_found"})
+  end
 end

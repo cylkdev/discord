@@ -8,6 +8,8 @@ defmodule Discord.HTTP do
   `Discord.Bots.API` and other clients above this layer.
   """
 
+  @logger_prefix "Discord.HTTP"
+
   @default_receive_timeout 15_000
 
   def get(url, headers \\ [], opts \\ []) do
@@ -29,11 +31,28 @@ defmodule Discord.HTTP do
       |> Keyword.merge(opts)
       |> put_body(body)
 
+    Discord.Log.debug(@logger_prefix, "request", method: method, url: url)
+    started_at = System.monotonic_time(:millisecond)
+
     case Req.request(req_opts) do
       {:ok, %Req.Response{status: status, body: body, headers: headers}} ->
+        Discord.Log.debug(@logger_prefix, "response",
+          method: method,
+          url: url,
+          status: status,
+          elapsed_ms: System.monotonic_time(:millisecond) - started_at
+        )
+
         {:ok, %{status: status, body: body, headers: headers}}
 
       {:error, reason} ->
+        Discord.Log.error(@logger_prefix, "request failed",
+          method: method,
+          url: url,
+          reason: reason,
+          elapsed_ms: System.monotonic_time(:millisecond) - started_at
+        )
+
         {:error, reason}
     end
   end
