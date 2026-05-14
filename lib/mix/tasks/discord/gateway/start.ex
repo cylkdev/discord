@@ -5,12 +5,12 @@ defmodule Mix.Tasks.Discord.Gateway.Start do
   Boots the Discord Gateway WebSocket infrastructure and keeps the BEAM
   alive until shutdown:
 
-    * `Discord.Gateways` — supervises the event buffer and the dynamic
+    * `Discord.Gateways` — supervises the gateway pubsub and the dynamic
       supervisor that hosts the Discord WebSocket (started via the
       `:discord` application by `Mix.Discord.Utils.start!/0`).
-    * `Discord.Webhooks` — supervises the in-memory webhook event buffer
-      that `Discord.Endpoint.WebhooksPlug` writes to (also started by
-      `:discord`).
+    * `Discord.Webhooks` — supervises the in-process webhook pubsub that
+      `Discord.Endpoint.WebhooksPlug` broadcasts verified events over
+      (also started by `:discord`).
     * `Discord.Endpoint` — the Bandit listener, also started by the
       `:discord` application. This task writes the listener's `--port`
       into application env under `{:discord, Discord.Endpoint}` **before**
@@ -40,8 +40,8 @@ defmodule Mix.Tasks.Discord.Gateway.Start do
   Options:
 
     * `--token` — when given, opens the Discord Gateway WebSocket via
-      `Discord.Gateways.connect/2` so events accumulate in the buffer.
-      Pass the raw bot token, not `Bot <token>`.
+      `Discord.Gateways.connect/2` so dispatch events start flowing to
+      subscribers. Pass the raw bot token, not `Bot <token>`.
     * `--name` — registry name for the spawned WebSocket (atom, default `:default`).
       Multiple invocations with distinct names can run concurrently.
     * `--port` — Bandit listen port (default `4000`).
@@ -55,8 +55,8 @@ defmodule Mix.Tasks.Discord.Gateway.Start do
 
       mix discord.gateway.start
 
-  Start and immediately open the Discord WebSocket so
-  `/gateways/default/events` populates:
+  Start and immediately open the Discord WebSocket so dispatch events
+  start flowing:
 
       mix discord.gateway.start --token MTAxMjM0NTY3ODkw...
 
@@ -64,10 +64,15 @@ defmodule Mix.Tasks.Discord.Gateway.Start do
 
       iex -S mix discord.gateway.start
 
+  From the IEx session, subscribe to receive dispatch events as process
+  messages:
+
+      Discord.Gateways.subscribe(:default)
+      # receive: {:gateway_event, %{type: "MESSAGE_CREATE", ...}}
+
   Smoke-test the local endpoint while running:
 
       curl http://localhost:4000/health
-      curl http://localhost:4000/gateways/default/events
 
   ## Shutdown
 

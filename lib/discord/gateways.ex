@@ -6,24 +6,27 @@ defmodule Discord.Gateways do
 
     * Starts and stops named Discord Gateway websocket connections.
     * Requests `[:guilds, :guild_messages, :message_content]` by default.
-    * Buffers all dispatch events per connection, newest first.
+    * Broadcasts every dispatch event over an in-process pubsub. The library
+      itself does not store events; consumers subscribe and decide what to
+      keep.
     * Stores bot identity from the `READY` event.
-    * `events/1` and `events/2` return all buffered events for one connection.
-    * `events/3` only accepts the literal strings returned by `supported_event_types/0`.
-    * `disconnect/1` closes the websocket but does not clear buffered events.
+    * `disconnect/1` closes the websocket.
     * `send_message/3` and `reply/4` perform outbound Discord REST requests
       using the token attached to the named connection.
     * `connect/3` only confirms that the local worker started; Discord
       authentication still completes asynchronously.
 
-  Open a connection by passing the raw bot token explicitly:
+  Open a connection by passing the raw bot token explicitly, then subscribe
+  to receive dispatch events as regular process messages:
 
+      Discord.Gateways.subscribe(:main)
       Discord.Gateways.connect(:main, "YOUR_BOT_TOKEN")
+      # then in the subscribed process:
+      # receive: {:gateway_event, %{type: "MESSAGE_CREATE", ...}}
 
-  Then poll received events through the public API or the local HTTP endpoint:
+  Subscribe to one event type only:
 
-      Discord.Gateways.events(:main)
-      curl http://localhost:4000/gateways/main/events
+      Discord.Gateways.subscribe(:main, "MESSAGE_CREATE")
 
   The token must be a string. There is no implicit token loading from
   application config or environment variables.
@@ -32,29 +35,13 @@ defmodule Discord.Gateways do
   use Supervisor
 
   alias Discord.Bots.API
-  alias Discord.Gateways.{EventBuffer, WebSocket, WebSocketRegistry, WebSocketSupervisor}
+  alias Discord.Gateways.{PubSub, WebSocket, WebSocketRegistry, WebSocketSupervisor}
 
   @logger_prefix "Discord.Gateways"
   @default_intents [:guilds, :guild_messages, :message_content]
 
-  @event_types [
-    "READY",
-    "RESUMED",
-    "MESSAGE_CREATE",
-    "MESSAGE_UPDATE",
-    "MESSAGE_DELETE",
-    "MESSAGE_DELETE_BULK"
-  ]
-
   @type gateway_name :: atom() | String.t()
   @type intent_name :: :guilds | :guild_messages | :message_content
-
-  @typedoc """
-  A Discord dispatch type string supported by `events/3`.
-
-  Valid runtime values are the literals returned by `supported_event_types/0`.
-  """
-  @type event_type :: String.t()
 
   @type gateway_event :: %{
           connection: gateway_name(),
@@ -72,8 +59,7 @@ defmodule Discord.Gateways do
           bot_username: String.t() | nil,
           intents: [intent_name()],
           session_id: String.t() | nil,
-          resume_gateway_url: String.t() | nil,
-          event_count: non_neg_integer()
+          resume_gateway_url: String.t() | nil
         }
 
   @type message_payload :: %{optional(String.t()) => term()}
@@ -99,7 +85,7 @@ defmodule Discord.Gateways do
     children = [
       {Discord.Gateways.WebSocketRegistry, opts},
       {Discord.Gateways.WebSocketSupervisor, opts},
-      {Discord.Gateways.EventBuffer, opts}
+      {Discord.Gateways.PubSub, opts}
     ]
 
     Discord.Log.info(
@@ -128,7 +114,8 @@ defmodule Discord.Gateways do
 
     * Starts a local worker under the gateway dynamic supervisor.
     * Opens a TLS websocket to Discord.
-    * Starts heartbeats and begins buffering dispatch events for the connection.
+    * Starts heartbeats and begins broadcasting dispatch events to pubsub
+      subscribers for the connection.
 
   The return value only confirms that the local worker started. Discord still
   authenticates the token asynchronously over the websocket session.
@@ -162,7 +149,6 @@ defmodule Discord.Gateways do
   Side effects:
 
     * Stops the websocket worker for the named connection.
-    * Leaves buffered events intact.
   """
   @spec disconnect(gateway_name()) :: :ok | {:error, :not_found}
   def disconnect(name) do
@@ -181,7 +167,7 @@ defmodule Discord.Gateways do
   Returns the current public connection snapshot for one live connection.
 
   The returned map contains the current connection status, stored bot identity,
-  requested intents, resume metadata, and the current buffered event count.
+  requested intents, and resume metadata.
   """
   @spec connection_info(gateway_name()) :: {:ok, connection_info()} | {:error, :not_found}
   def connection_info(name), do: WebSocket.connection_info(name)
@@ -201,149 +187,56 @@ defmodule Discord.Gateways do
   end
 
   @doc """
-  Returns the literal Discord event type strings supported by `events/3`.
+  Subscribes the calling process to every dispatch event for the named
+  connection. The subscriber receives `{:gateway_event, event_map}` messages.
 
-  Returns:
+  Parameters:
 
-    * `["READY", "RESUMED", "MESSAGE_CREATE", "MESSAGE_UPDATE",
-       "MESSAGE_DELETE", "MESSAGE_DELETE_BULK"]`
+    * `name` - connection name. Atoms and strings are accepted.
 
-  Side effects: none.
+  Returns `:ok`. The subscription is auto-released when the calling process
+  exits.
 
   ## Examples
 
-      iex> Discord.Gateways.supported_event_types()
-      ["READY", "RESUMED", "MESSAGE_CREATE", "MESSAGE_UPDATE", "MESSAGE_DELETE", "MESSAGE_DELETE_BULK"]
+      iex> Discord.Gateways.subscribe(:main)
+      :ok
   """
-  @spec supported_event_types() :: [event_type()]
-  def supported_event_types, do: @event_types
+  @spec subscribe(gateway_name()) :: :ok
+  def subscribe(name), do: PubSub.subscribe(normalize_name(name))
 
   @doc """
-  Returns all buffered events for one connection, newest first.
+  Subscribes the calling process to dispatch events of one `type` for the
+  named connection. Other event types are not delivered.
 
   Parameters:
 
     * `name` - connection name.
+    * `type` - Discord dispatch event type string (for example `"MESSAGE_CREATE"`).
 
-  Returns `[]` when the connection has no buffered events.
-
-  Side effects: none.
-
-  ## Examples
-
-      iex> Discord.Gateways.events(:main)
-      [
-        %{
-          connection: :main,
-          type: "MESSAGE_CREATE",
-          seq: 15,
-          received_at: "2026-05-10T15:00:00Z",
-          data: %{"id" => "9001", "channel_id" => "123", "content" => "@my-bot ping"}
-        },
-        %{
-          connection: :main,
-          type: "READY",
-          seq: 1,
-          received_at: "2026-05-10T14:59:00Z",
-          data: %{"session_id" => "sess-1", "user" => %{"id" => "4242", "username" => "my-bot"}}
-        }
-      ]
+  Returns `:ok`.
   """
-  @spec events(gateway_name()) :: [gateway_event()]
-  def events(name), do: EventBuffer.list(normalize_name(name))
+  @spec subscribe(gateway_name(), String.t()) :: :ok
+  def subscribe(name, type) when is_binary(type),
+    do: PubSub.subscribe(normalize_name(name), type)
 
   @doc """
-  Returns all buffered events for one connection, newest first, with optional
-  filtering options.
+  Unsubscribes the calling process from every-event delivery for the named
+  connection.
 
-  Parameters:
-
-    * `name` - connection name.
-    * `opts[:limit]` - positive integer limit. Invalid or missing values leave
-      the result unbounded.
-
-  Side effects: none.
-
-  ## Examples
-
-      iex> Discord.Gateways.events(:main, limit: 1)
-      [
-        %{
-          connection: :main,
-          type: "MESSAGE_CREATE",
-          seq: 15,
-          received_at: "2026-05-10T15:00:00Z",
-          data: %{"id" => "9001", "channel_id" => "123", "content" => "@my-bot ping"}
-        }
-      ]
+  Returns `:ok`. Idempotent.
   """
-  @spec events(gateway_name(), keyword()) :: [gateway_event()]
-  def events(name, opts) when is_list(opts) do
-    name
-    |> events()
-    |> maybe_limit(opts[:limit])
-  end
-
-  @doc false
-  @spec events(gateway_name(), event_type()) :: [gateway_event()]
-  def events(name, type) when is_binary(type), do: events(name, type, [])
+  @spec unsubscribe(gateway_name()) :: :ok
+  def unsubscribe(name), do: PubSub.unsubscribe(normalize_name(name))
 
   @doc """
-  Returns buffered events for one connection whose `event.type` matches `type`,
-  newest first.
+  Unsubscribes the calling process from a typed subscription.
 
-  Parameters:
-
-    * `name` - connection name.
-    * `type` - one of the literal strings returned by `supported_event_types/0`.
-    * `opts[:limit]` - positive integer limit. Invalid or missing values leave
-      the result unbounded.
-
-  Side effects: none.
-
-  Raises `ArgumentError` when `type` is not one of the supported strings.
-
-  ## Examples
-
-      iex> Discord.Gateways.events(:main, "MESSAGE_CREATE", limit: 1)
-      [
-        %{
-          connection: :main,
-          type: "MESSAGE_CREATE",
-          seq: 15,
-          received_at: "2026-05-10T15:00:00Z",
-          data: %{
-            "id" => "9001",
-            "channel_id" => "123",
-            "content" => "@my-bot ping",
-            "mentions" => [%{"id" => "4242"}]
-          }
-        }
-      ]
-
-      iex> Discord.Gateways.events(:main, "THREAD_CREATE", [])
-      ** (ArgumentError) unsupported gateway event type "THREAD_CREATE". Supported values: ["READY", "RESUMED", "MESSAGE_CREATE", "MESSAGE_UPDATE", "MESSAGE_DELETE", "MESSAGE_DELETE_BULK"]
+  Returns `:ok`. Idempotent.
   """
-  @spec events(gateway_name(), event_type(), keyword()) :: [gateway_event()]
-  def events(name, type, opts) when is_binary(type) and type in @event_types and is_list(opts) do
-    name
-    |> events()
-    |> Enum.filter(fn event -> event.type == type end)
-    |> maybe_limit(opts[:limit])
-  end
-
-  def events(_name, type, _opts) when is_binary(type) do
-    raise ArgumentError,
-          "unsupported gateway event type #{inspect(type)}. Supported values: #{inspect(@event_types)}"
-  end
-
-  @doc """
-  Clears buffered events for one connection.
-
-  Returns `:ok` even when there were no buffered events for the connection.
-  """
-  @spec clear_events(gateway_name()) :: :ok
-  def clear_events(name), do: EventBuffer.clear(normalize_name(name))
+  @spec unsubscribe(gateway_name(), String.t()) :: :ok
+  def unsubscribe(name, type) when is_binary(type),
+    do: PubSub.unsubscribe(normalize_name(name), type)
 
   @doc """
   Sends a Discord message using the bot token attached to the named connection.
@@ -465,9 +358,4 @@ defmodule Discord.Gateways do
 
   defp normalize_name(name) when is_atom(name), do: Atom.to_string(name)
   defp normalize_name(name) when is_binary(name), do: name
-
-  defp maybe_limit(events, limit) when is_integer(limit) and limit > 0,
-    do: Enum.take(events, limit)
-
-  defp maybe_limit(events, _limit), do: events
 end

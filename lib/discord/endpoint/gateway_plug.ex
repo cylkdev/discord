@@ -2,17 +2,16 @@ defmodule Discord.Endpoint.GatewayPlug do
   @moduledoc """
   HTTP API for gateway observability and control.
 
-      GET /gateways                     -> list live gateway connection info
-      GET /gateways/:name               -> one live gateway connection
-      GET /gateways/:name/events        -> buffered events for one connection
-      GET /gateways/:name/events/:type  -> buffered events filtered by one type
+      GET /gateways            -> list live gateway connection info
+      GET /gateways/:name      -> one live gateway connection
 
   Observable behaviour:
 
     * Read routes are unsigned.
     * Write routes are signed and rejected before any mutation when the
       signature is missing, invalid, stale, or unconfigured.
-    * Old `/events` routes are not supported here.
+    * Dispatch events are no longer surfaced over HTTP; subscribe via
+      `Discord.Gateways.subscribe/1,2` instead.
   """
 
   @behaviour Plug
@@ -39,26 +38,6 @@ defmodule Discord.Endpoint.GatewayPlug do
     case Discord.Gateways.connection_info(name) do
       {:ok, info} -> Response.send_json(conn, 200, info)
       {:error, :not_found} -> Response.send_json(conn, 404, %{error: "not_found"})
-    end
-  end
-
-  def call(%Conn{method: "GET", path_info: ["gateways", name, "events"]} = conn, _opts) do
-    conn = Conn.fetch_query_params(conn)
-    events = Discord.Gateways.events(name, limit: parse_limit(conn.params["limit"]))
-    Response.send_json(conn, 200, %{events: events})
-  end
-
-  def call(%Conn{method: "GET", path_info: ["gateways", name, "events", type]} = conn, _opts) do
-    conn = Conn.fetch_query_params(conn)
-
-    if type in Discord.Gateways.supported_event_types() do
-      events = Discord.Gateways.events(name, type, limit: parse_limit(conn.params["limit"]))
-      Response.send_json(conn, 200, %{events: events})
-    else
-      Response.send_json(conn, 400, %{
-        error: "unsupported_event_type",
-        supported_event_types: Discord.Gateways.supported_event_types()
-      })
     end
   end
 
@@ -93,13 +72,6 @@ defmodule Discord.Endpoint.GatewayPlug do
         :ok -> Conn.send_resp(conn, 204, "")
         {:error, :not_found} -> Response.send_json(conn, 404, %{error: "not_found"})
       end
-    end)
-  end
-
-  def call(%Conn{method: "DELETE", path_info: ["gateways", name, "events"]} = conn, opts) do
-    with_verified_body(conn, opts, fn conn, _body ->
-      :ok = Discord.Gateways.clear_events(name)
-      Conn.send_resp(conn, 204, "")
     end)
   end
 
@@ -161,20 +133,6 @@ defmodule Discord.Endpoint.GatewayPlug do
 
   def call(
         %Conn{path_info: ["gateways", _name]} = conn,
-        _opts
-      ) do
-    Response.send_json(conn, 405, %{error: "method_not_allowed"})
-  end
-
-  def call(
-        %Conn{path_info: ["gateways", _name, "events"]} = conn,
-        _opts
-      ) do
-    Response.send_json(conn, 405, %{error: "method_not_allowed"})
-  end
-
-  def call(
-        %Conn{path_info: ["gateways", _name, "events", _type]} = conn,
         _opts
       ) do
     Response.send_json(conn, 405, %{error: "method_not_allowed"})
@@ -350,15 +308,6 @@ defmodule Discord.Endpoint.GatewayPlug do
     do: normalize_intents(rest, [:message_content | acc])
 
   defp normalize_intents(_intents, _acc), do: {:error, :invalid_request}
-
-  defp parse_limit(limit) when is_binary(limit) do
-    case Integer.parse(limit) do
-      {value, ""} when value > 0 -> value
-      _ -> nil
-    end
-  end
-
-  defp parse_limit(_), do: nil
 
   defp canonical_payload(timestamp, method, request_path, body) do
     Enum.join([timestamp, String.upcase(method), request_path, body], "\n")

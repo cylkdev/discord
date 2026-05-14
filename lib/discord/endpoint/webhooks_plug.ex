@@ -25,7 +25,7 @@ defmodule Discord.Endpoint.WebhooksPlug do
   @behaviour Plug
 
   alias Discord.Endpoint.Response
-  alias Discord.Webhooks.{EventBuffer, Signature}
+  alias Discord.Webhooks.{PubSub, Signature}
   alias Plug.Conn
 
   @logger_prefix "Discord.Endpoint.WebhooksPlug"
@@ -123,7 +123,7 @@ defmodule Discord.Endpoint.WebhooksPlug do
       application_id: payload["application_id"]
     )
 
-    EventBuffer.push(%{
+    PubSub.broadcast(%{
       type: event["type"],
       received_at: DateTime.utc_now() |> DateTime.to_iso8601(),
       payload: payload

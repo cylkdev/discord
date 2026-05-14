@@ -5,7 +5,6 @@ defmodule Discord.Endpoint.WebhooksPlugTest do
   import Plug.Test
 
   alias Discord.Endpoint.WebhooksPlug
-  alias Discord.Webhooks.EventBuffer
 
   setup_all do
     start_supervised!({Discord.Webhooks, []})
@@ -13,11 +12,13 @@ defmodule Discord.Endpoint.WebhooksPlugTest do
   end
 
   setup do
-    EventBuffer.clear()
+    :ok = Discord.Webhooks.subscribe()
 
     {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
     public_key_hex = Base.encode16(pub, case: :lower)
     state = WebhooksPlug.init(public_key: public_key_hex)
+
+    on_exit(fn -> Discord.Webhooks.unsubscribe() end)
 
     %{public_key: public_key_hex, private_key: priv, state: state}
   end
@@ -33,7 +34,7 @@ defmodule Discord.Endpoint.WebhooksPlugTest do
     |> put_req_header("x-signature-timestamp", timestamp)
   end
 
-  test "PING (type 0) returns 204 with empty body", ctx do
+  test "PING (type 0) returns 204 with empty body and broadcasts no event", ctx do
     body = ~s({"version":1,"application_id":"1","type":0})
 
     conn = body |> signed_post(ctx) |> WebhooksPlug.call(ctx.state)
@@ -41,10 +42,10 @@ defmodule Discord.Endpoint.WebhooksPlugTest do
     assert conn.status == 204
     assert conn.resp_body == ""
     assert Plug.Conn.get_resp_header(conn, "content-type") == ["application/json; charset=utf-8"]
-    assert EventBuffer.list() == []
+    refute_receive {:webhook_event, _}, 50
   end
 
-  test "valid event (type 1) returns 204 and pushes to buffer", ctx do
+  test "valid event (type 1) returns 204 and broadcasts to subscribers", ctx do
     body =
       ~s({"version":1,"application_id":"1","type":1,"event":{"type":"APPLICATION_AUTHORIZED","timestamp":"2024-10-18T14:42:53.064834","data":{"integration_type":1,"scopes":["applications.commands"],"user":{}}}})
 
@@ -53,16 +54,16 @@ defmodule Discord.Endpoint.WebhooksPlugTest do
     assert conn.status == 204
     assert conn.resp_body == ""
 
-    assert [
-             %{
-               type: "APPLICATION_AUTHORIZED",
-               received_at: <<_::binary>>,
-               payload: %{"event" => %{"type" => "APPLICATION_AUTHORIZED"}}
-             }
-           ] = EventBuffer.list()
+    assert_receive {:webhook_event,
+                    %{
+                      type: "APPLICATION_AUTHORIZED",
+                      received_at: <<_::binary>>,
+                      payload: %{"event" => %{"type" => "APPLICATION_AUTHORIZED"}}
+                    }},
+                   100
   end
 
-  test "invalid signature returns 401 and does not push", ctx do
+  test "invalid signature returns 401 and does not broadcast", ctx do
     body = ~s({"version":1,"application_id":"1","type":0})
     timestamp = "1730000000"
     bad_sig = String.duplicate("00", 64)
@@ -76,7 +77,7 @@ defmodule Discord.Endpoint.WebhooksPlugTest do
 
     assert conn.status == 401
     assert conn.resp_body == ~s({"error":"invalid_signature"})
-    assert EventBuffer.list() == []
+    refute_receive {:webhook_event, _}, 50
   end
 
   test "missing signature headers return 401", ctx do

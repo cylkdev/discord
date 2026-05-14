@@ -6,7 +6,7 @@ defmodule Discord.Gateways.WebSocket do
   Lifecycle implemented per https://docs.discord.com/developers/events/gateway:
 
       connect → Hello (op 10) → Identify (op 2) → Heartbeat loop (op 1/11)
-                                              ↘ Dispatch (op 0) → EventBuffer
+                                              ↘ Dispatch (op 0) → PubSub
 
   On Reconnect (op 7), Invalid Session (op 9, resumable), or socket close
   with a recoverable code, the GenServer reconnects to `resume_gateway_url`
@@ -20,7 +20,7 @@ defmodule Discord.Gateways.WebSocket do
 
   use GenServer
 
-  alias Discord.Gateways.EventBuffer
+  alias Discord.Gateways.PubSub
 
   @logger_prefix "Discord.Gateways.WebSocket"
 
@@ -207,8 +207,7 @@ defmodule Discord.Gateways.WebSocket do
       bot_username: state.bot_username,
       intents: state.intents,
       session_id: state.session_id,
-      resume_gateway_url: state.resume_gateway_url,
-      event_count: EventBuffer.count(state.registry_name)
+      resume_gateway_url: state.resume_gateway_url
     }
 
     {:reply, {:ok, info}, state}
@@ -440,7 +439,7 @@ defmodule Discord.Gateways.WebSocket do
           state
       end
 
-    EventBuffer.push(state.registry_name, %{
+    PubSub.broadcast(state.public_name, %{
       connection: state.public_name,
       type: type,
       seq: seq,

@@ -1,15 +1,10 @@
 defmodule Discord.GatewaysTest do
   use ExUnit.Case, async: false
 
-  alias Discord.Gateways.EventBuffer
+  alias Discord.Gateways.PubSub
 
   setup_all do
     start_supervised!({Discord.Gateways, []})
-    :ok
-  end
-
-  setup do
-    EventBuffer.clear()
     :ok
   end
 
@@ -18,63 +13,42 @@ defmodule Discord.GatewaysTest do
     assert_raise FunctionClauseError, fn -> Discord.Gateways.connect(:test, "") end
   end
 
-  test "supported_event_types/0 returns the exact literal list" do
-    assert Discord.Gateways.supported_event_types() == [
-             "READY",
-             "RESUMED",
-             "MESSAGE_CREATE",
-             "MESSAGE_UPDATE",
-             "MESSAGE_DELETE",
-             "MESSAGE_DELETE_BULK"
-           ]
-  end
+  test "subscribe/1 then a PubSub broadcast delivers a gateway_event message" do
+    :ok = Discord.Gateways.subscribe(:main)
 
-  test "events/1 returns all events for one connection" do
-    EventBuffer.push("main", %{connection: :main, type: "READY", seq: 1, data: %{}})
-    EventBuffer.push("main", %{connection: :main, type: "MESSAGE_CREATE", seq: 2, data: %{}})
-
-    EventBuffer.push("secondary", %{
-      connection: :secondary,
-      type: "MESSAGE_DELETE",
-      seq: 3,
+    event = %{
+      connection: "main",
+      type: "MESSAGE_CREATE",
+      seq: 1,
+      received_at: "2026-05-14T00:00:00Z",
       data: %{}
-    })
+    }
 
-    assert [
-             %{type: "MESSAGE_CREATE", connection: :main},
-             %{type: "READY", connection: :main}
-           ] = Discord.Gateways.events(:main)
+    :ok = PubSub.broadcast(:main, event)
+
+    assert_receive {:gateway_event, ^event}, 100
+
+    :ok = Discord.Gateways.unsubscribe(:main)
   end
 
-  test "events/2 with limit returns newest events for one connection" do
-    EventBuffer.push("main", %{connection: :main, type: "READY", seq: 1, data: %{}})
-    EventBuffer.push("main", %{connection: :main, type: "MESSAGE_CREATE", seq: 2, data: %{}})
+  test "subscribe/2 filters by event type" do
+    :ok = Discord.Gateways.subscribe(:typed, "MESSAGE_CREATE")
 
-    assert [%{type: "MESSAGE_CREATE"}] = Discord.Gateways.events(:main, limit: 1)
-  end
+    other_event = %{
+      connection: "typed",
+      type: "READY",
+      seq: 1,
+      received_at: "2026-05-14T00:00:00Z",
+      data: %{}
+    }
 
-  test "events/3 filters by supported event type" do
-    EventBuffer.push("main", %{connection: :main, type: "READY", seq: 1, data: %{}})
-    EventBuffer.push("main", %{connection: :main, type: "MESSAGE_CREATE", seq: 2, data: %{}})
-    EventBuffer.push("main", %{connection: :main, type: "MESSAGE_CREATE", seq: 3, data: %{}})
+    :ok = PubSub.broadcast(:typed, other_event)
+    refute_receive {:gateway_event, _}, 50
 
-    assert [%{seq: 3}, %{seq: 2}] = Discord.Gateways.events(:main, "MESSAGE_CREATE", [])
-  end
+    matching_event = %{other_event | type: "MESSAGE_CREATE", seq: 2}
+    :ok = PubSub.broadcast(:typed, matching_event)
+    assert_receive {:gateway_event, ^matching_event}, 100
 
-  test "events/3 raises on unsupported event types" do
-    assert_raise ArgumentError,
-                 ~r/unsupported gateway event type "THREAD_CREATE"/,
-                 fn ->
-                   Discord.Gateways.events(:main, "THREAD_CREATE", [])
-                 end
-  end
-
-  test "clear_events/1 removes only one connection buffer" do
-    EventBuffer.push("main", %{connection: :main, type: "READY", seq: 1, data: %{}})
-    EventBuffer.push("secondary", %{connection: :secondary, type: "READY", seq: 2, data: %{}})
-
-    assert :ok = Discord.Gateways.clear_events(:main)
-    assert Discord.Gateways.events(:main) == []
-    assert [%{connection: :secondary}] = Discord.Gateways.events(:secondary)
+    :ok = Discord.Gateways.unsubscribe(:typed, "MESSAGE_CREATE")
   end
 end

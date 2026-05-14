@@ -8,8 +8,8 @@ defmodule Discord.Webhooks do
   https://docs.discord.com/developers/events/webhook-events for the full
   list and payload shapes.
 
-  This supervisor owns the event buffer that `Discord.Endpoint.WebhooksPlug`
-  pushes verified events into. It is started explicitly (not from
+  This supervisor owns the pubsub that `Discord.Endpoint.WebhooksPlug`
+  broadcasts verified events over. It is started explicitly (not from
   `Discord.Application`) so callers can opt in — same pattern as
   `Discord.Gateways`.
 
@@ -17,13 +17,15 @@ defmodule Discord.Webhooks do
   option to `Discord.Endpoint.start_link/1` (`:public_key`); it is not held
   by this supervisor.
 
-  iex> Discord.Webhooks.events()
-  [%{type: "APPLICATION_AUTHORIZED", received_at: "...", payload: %{...}}, ...]
+  Subscribe to receive verified webhook events as process messages:
+
+      Discord.Webhooks.subscribe()
+      # receive: {:webhook_event, %{type: "APPLICATION_AUTHORIZED", ...}}
   """
 
   use Supervisor
 
-  alias Discord.Webhooks.EventBuffer
+  alias Discord.Webhooks.PubSub
 
   @logger_prefix "Discord.Webhooks"
 
@@ -35,13 +37,27 @@ defmodule Discord.Webhooks do
   @impl true
   def init(opts) do
     children = [
-      {EventBuffer, opts}
+      {PubSub, opts}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
   end
 
-  @doc "Returns the buffered webhook events, newest-first."
-  @spec events() :: [map]
-  def events, do: EventBuffer.list()
+  @doc """
+  Subscribes the calling process to verified webhook events. Subscribers
+  receive `{:webhook_event, event_map}` messages.
+
+  Returns `:ok`. The subscription is auto-released when the calling process
+  exits.
+  """
+  @spec subscribe() :: :ok
+  def subscribe, do: PubSub.subscribe()
+
+  @doc """
+  Unsubscribes the calling process from webhook events.
+
+  Returns `:ok`. Idempotent.
+  """
+  @spec unsubscribe() :: :ok
+  def unsubscribe, do: PubSub.unsubscribe()
 end

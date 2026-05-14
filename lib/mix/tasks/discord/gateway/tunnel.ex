@@ -59,7 +59,6 @@ defmodule Mix.Tasks.Discord.Gateway.Tunnel do
   Smoke-test the public URL after cloudflared connects:
 
       curl https://discord-gateway-cloudflared.cylk.dev/health
-      curl https://discord-gateway-cloudflared.cylk.dev/gateways/default/events
   """
 
   use Mix.Task
